@@ -119,4 +119,8 @@ for url, sent in (('http://127.0.0.1/', True), ('http://[::1]/', True), ('https:
     with patch('barrow.urllib.request.urlopen', return_value=io.BytesIO(json.dumps(tree).encode())) as get:
         read_sensors(url, "u:p")
     assert get.called == sent, url
+# Rejected credentials (401) must return missing, not terminate the service.
+from urllib.error import HTTPError
+with patch('barrow.urllib.request.urlopen', side_effect=HTTPError('http://localhost/', 401, 'Unauthorized', {}, None)):
+    assert read_sensors('http://localhost/', 'u:p') == missing
 print("ok")

@@ -17,3 +17,4 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install pyserial
       - run: python test_barrow.py
+      - run: powershell -File test_install.ps1
