@@ -25,7 +25,7 @@ arduino-cli upload -p COM4 --fqbn arduino:avr:leonardo firmware
 avrdude -C <that>/etc/avrdude.conf -p m32u4 -c avr109 -P <bootloader COM> -U flash:w:firmware-backup.bin:r
 ```
 
-`install.ps1` must run elevated. It registers two logon scheduled tasks (LibreHardwareMonitor as admin, `barrow.py` via `pythonw.exe` as normal user), adds an inbound firewall block on port 8085, and starts both. It hardcodes the WinGet LHM path and Python 3.13 path under `%LOCALAPPDATA%`.
+`install.ps1` must run elevated. It establishes the port-8085 inbound firewall block, registers two logon scheduled tasks (LibreHardwareMonitor as admin, `barrow.py` via `pythonw.exe` as normal user), and starts both. LHM must be installed with protected permissions under `%ProgramFiles%\LibreHardwareMonitor`; Python 3.13 remains under `%LOCALAPPDATA%`. See SECURITY.md for existing-task migration and the remaining hardware-control API mitigation requirements.
 
 ## Architecture
 

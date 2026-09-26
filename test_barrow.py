@@ -46,4 +46,50 @@ srv = http.server.HTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.handle_request, daemon=True).start()
 assert read_sensors(f"http://127.0.0.1:{srv.server_port}/") == \
     (53.8, 10.7, 5225.0, "GeForce RTX 5070 Ti", 40.0, 3.0, 20.7)
+srv.server_close()
+
+# Untrusted HTTP responses must not terminate the long-running serial service.
+import io, sys
+from http.client import IncompleteRead
+from unittest.mock import patch, Mock
+import barrow
+
+missing = (None, None, None, "", None, None, None)
+malformed = [b'[]', b'null', b'{"Children":null}', b'{"Children":{}}',
+             b'{"Children":[null,[],42]}', b'{"HardwareId":[],"Text":{}}',
+             b'{"SensorId":[],"RawValue":1}', b'{"Text":[],"RawValue":1}',
+             b'not JSON', b'\xff', b'[' * 10000 + b'0' + b']' * 10000,
+             b' ' * (barrow.MAX_SENSOR_BYTES + 1)]
+for value in ({}, [], True, None, float('nan'), float('inf'), -float('inf'), 10 ** 400, '9' * 400):
+    malformed.append(json.dumps({"SensorId": "/amdcpu/0/temperature/0",
+                                 "Text": "CPU Package", "RawValue": value}).encode())
+for body in malformed:
+    with patch('barrow.urllib.request.urlopen', return_value=io.BytesIO(body)):
+        assert read_sensors('http://localhost/audit') == missing, body[:80]
+for error in (OSError('offline'), IncompleteRead(b'partial')):
+    with patch('barrow.urllib.request.urlopen', side_effect=error):
+        assert read_sensors('http://localhost/audit') == missing
+
+mixed = {"Children": [None, {"Children": None}, tree]}
+with patch('barrow.urllib.request.urlopen', return_value=io.BytesIO(json.dumps(mixed).encode())):
+    assert read_sensors('http://localhost/audit') == \
+        (53.8, 10.7, 5225.0, "GeForce RTX 5070 Ti", 40.0, 3.0, 20.7)
+assert len(frame('CPU', 1, 2, 3, 'X' * 10000)) < 160
+assert frame('CPU', 1, 2, 3, 'bad\n|gpu').count('\n') == 1
+
+# A bad poll followed by a valid poll recovers without reopening the serial port.
+serial_port = Mock(port='audit-no-hardware')
+with patch.object(sys, 'argv', ['barrow.py', '--port', 'audit-no-hardware']), \
+     patch('barrow.cpu_name', return_value='AuditChip'), \
+     patch('barrow.serial.Serial', return_value=serial_port) as connect, \
+     patch('barrow.urllib.request.urlopen', side_effect=[io.BytesIO(b'[]'), io.BytesIO(json.dumps(tree).encode())]), \
+     patch('barrow.time.sleep', side_effect=[None, KeyboardInterrupt]), patch('builtins.print'):
+    try:
+        barrow.main()
+    except KeyboardInterrupt:
+        pass
+assert connect.call_count == 1
+assert serial_port.write.call_count == 2
+assert serial_port.write.call_args_list[0].args[0] == frame('AuditChip', *missing).encode()
+assert b'C54c11%' in serial_port.write.call_args_list[1].args[0]
 print("ok")
