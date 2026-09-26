@@ -43,8 +43,11 @@ def short_name(name):
 
 
 def lhm_auth(config):
-    """"user:password" for LHM's web server from its LibreHardwareMonitor.config, or None when
-    authentication is off or the file is unreadable. LHM writes the file only when it exits.
+    """Return "user:password" from the LibreHardwareMonitor.config path given by config.
+
+    Return None if the file is unreadable or malformed XML, or authenticationEnabled
+    is not "true" (case-insensitive). Missing credential values become empty strings.
+    LHM writes the file only when it exits.
 
     ponytail: relies on LHM 0.9.6 bug #1552: it saves SHA256(password) and hashes that again on load,
     so after one LHM restart the saved value is what the server accepts. Breaks once a release
@@ -61,11 +64,13 @@ def lhm_auth(config):
 
 def read_sensors(url, auth=None):
     """Returns (temp °C, load %, highest core MHz, GPU name, GPU temp °C, GPU load %, RAM used GB);
-    None ("" for the GPU name) for anything unavailable. auth is "user:password" for LHM's web server.
+    None ("" for the GPU name) for anything unavailable. A nonempty auth string
+    supplies "user:password" for HTTP Basic authentication; None or "" omits the header.
 
     Fetches LibreHardwareMonitor JSON from url with a two-second socket timeout.
-    Responses over 1 MiB and transport or JSON decoding errors (including excessive
-    nesting) return all fields unavailable. Invalid nodes and nonnumeric or
+    Responses over 1 MiB and HTTP errors (including rejected credentials), transport
+    errors, or JSON decoding errors (including excessive nesting) return all fields
+    unavailable. Invalid nodes and nonnumeric or
     nonfinite readings are skipped; numeric strings may include unit suffixes
     and a decimal comma.
 
@@ -156,6 +161,14 @@ def find_port():
 
 
 def main():
+    """Parse CLI options and continuously send sensor frames to the Leonardo.
+
+    Use --port or auto-detect the device, reloading --lhm-config credentials before
+    each sensor request. Sleep for --interval seconds after each iteration.
+    Unavailable readings are sent as "--"; serial failures trigger reconnection
+    on the next iteration. Registry lookup OSErrors, ValueError from an invalid
+    sleep interval, and KeyboardInterrupt propagate to the caller.
+    """
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", help="default: auto-detect Leonardo")
     ap.add_argument("--url", default="http://localhost:8085/data.json")
