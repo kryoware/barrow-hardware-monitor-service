@@ -40,10 +40,14 @@ tree = {"Children": [{"Children": [
         {"SensorId": "/gpu-nvidia/0/load/0", "Text": "GPU Core", "RawValue": "3.0 %"}]},
     {"SensorId": "/ram/data/0", "Text": "Memory Used", "RawValue": "20.7 GB"}]}]}
 H = type("H", (http.server.BaseHTTPRequestHandler,), {
-    "do_GET": lambda s: (s.send_response(200), s.end_headers(), s.wfile.write(json.dumps(tree).encode())),
+    "do_GET": lambda s: (s.send_response(200 if s.headers["Authorization"] == "Basic dTpw" else 401), s.end_headers(),
+                         s.wfile.write(json.dumps(tree).encode())),
     "log_message": lambda *a: None})
 srv = http.server.HTTPServer(("127.0.0.1", 0), H)
-threading.Thread(target=srv.handle_request, daemon=True).start()
-assert read_sensors(f"http://127.0.0.1:{srv.server_port}/") == \
-    (53.8, 10.7, 5225.0, "GeForce RTX 5070 Ti", 40.0, 3.0, 20.7)
+threading.Thread(target=lambda: [srv.handle_request() for _ in range(3)], daemon=True).start()
+url, down = f"http://127.0.0.1:{srv.server_port}/", (None, None, None, "", None, None, None)
+assert read_sensors(url, "u:p") == (53.8, 10.7, 5225.0, "GeForce RTX 5070 Ti", 40.0, 3.0, 20.7)
+assert read_sensors(url, "u:wrong") == down
+tree = {"Children": ["x", {"Children": "ab"}, {"SensorId": 5, "RawValue": [1]}]}
+assert read_sensors(url, "u:p") == down
 print("ok")

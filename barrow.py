@@ -9,9 +9,10 @@ Sensors come from LibreHardwareMonitor's Remote Web Server (Options > Remote Web
 Without it the display still shows the CPU name, with "--" for the readings.
 
     pip install pyserial
-    python barrow.py [--port COM4] [--url http://localhost:8085/data.json] [--interval 1]
+    python barrow.py [--port COM4] [--url http://localhost:8085/data.json] [--auth USER:PASSWORD] [--interval 1]
 """
 import argparse
+import base64
 import json
 import re
 import textwrap
@@ -37,45 +38,46 @@ def short_name(name):
                            "", name).split())
 
 
-def read_sensors(url):
+def read_sensors(url, auth=None):
     """Returns (temp °C, load %, highest core MHz, GPU name, GPU temp °C, GPU load %, RAM used GB);
-    None ("" for the GPU name) for anything unavailable."""
+    None ("" for the GPU name) for anything unavailable. auth is "user:password" for LHM's web server."""
+    headers = {"Authorization": "Basic " + base64.b64encode(auth.encode()).decode()} if auth else {}
     try:
-        with urllib.request.urlopen(url, timeout=2) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as r:
             stack = [json.load(r)]
-    except (OSError, ValueError):
+        temps, loads, clocks, names, gpus, ram = {}, {}, [], {}, {}, None
+        while stack:
+            n = stack.pop()
+            stack += n.get("Children", [])
+            if "HardwareId" in n:
+                names[n["HardwareId"]] = n.get("Text", "")
+            sid, text, v = n.get("SensorId", ""), n.get("Text", ""), n.get("RawValue")
+            if isinstance(v, str):  # LHM 0.9.6 sends e.g. "53.8 °C", decimal comma in some locales
+                m = re.match(r"-?\d+(?:[.,]\d+)?", v)
+                v = float(m[0].replace(",", ".")) if m else None
+            if not isinstance(v, (int, float)):
+                continue
+            hw, _, kind = sid.rpartition("/")[0].rpartition("/")
+            if hw.startswith("/gpu-") and text == "GPU Core":
+                gpus.setdefault(hw, {})[kind] = v
+            elif sid == "/ram/data/0":
+                ram = v
+            elif not re.fullmatch(r"/(amd|intel)cpu/0", hw):
+                continue
+            elif kind == "temperature":
+                temps[text] = v
+            elif kind == "load":
+                loads[text] = v
+            elif kind == "clock" and re.fullmatch(r"Core #\d+", text):
+                clocks.append(v)
+        temp = next((temps[k] for k in TEMP_SENSORS if k in temps), next(iter(temps.values()), None))
+        # Integrated GPUs report a "GPU Core" load but no temperature; prefer the card that has one.
+        gpu = min(gpus, key=lambda h: ("temperature" not in gpus[h], h), default=None)
+        g = gpus.get(gpu, {})
+        return (temp, loads.get("CPU Total"), max(clocks, default=None),
+                short_name(names.get(gpu, "")), g.get("temperature"), g.get("load"), ram)
+    except Exception:  # LHM down, wrong password or unexpected JSON; raising would kill pythonw silently
         return None, None, None, "", None, None, None
-    temps, loads, clocks, names, gpus, ram = {}, {}, [], {}, {}, None
-    while stack:
-        n = stack.pop()
-        stack += n.get("Children", [])
-        if "HardwareId" in n:
-            names[n["HardwareId"]] = n.get("Text", "")
-        sid, text, v = n.get("SensorId", ""), n.get("Text", ""), n.get("RawValue")
-        if isinstance(v, str):  # LHM 0.9.6 sends e.g. "53.8 °C", decimal comma in some locales
-            m = re.match(r"-?\d+(?:[.,]\d+)?", v)
-            v = float(m[0].replace(",", ".")) if m else None
-        if v is None:
-            continue
-        hw, _, kind = sid.rpartition("/")[0].rpartition("/")
-        if hw.startswith("/gpu-") and text == "GPU Core":
-            gpus.setdefault(hw, {})[kind] = v
-        elif sid == "/ram/data/0":
-            ram = v
-        elif not re.fullmatch(r"/(amd|intel)cpu/0", hw):
-            continue
-        elif kind == "temperature":
-            temps[text] = v
-        elif kind == "load":
-            loads[text] = v
-        elif kind == "clock" and re.fullmatch(r"Core #\d+", text):
-            clocks.append(v)
-    temp = next((temps[k] for k in TEMP_SENSORS if k in temps), next(iter(temps.values()), None))
-    # Integrated GPUs report a "GPU Core" load but no temperature; prefer the card that has one.
-    gpu = min(gpus, key=lambda h: ("temperature" not in gpus[h], h), default=None)
-    g = gpus.get(gpu, {})
-    return (temp, loads.get("CPU Total"), max(clocks, default=None),
-            short_name(names.get(gpu, "")), g.get("temperature"), g.get("load"), ram)
 
 
 def frame(name, temp, load, mhz, gpu="", gtemp=None, gload=None, ram=None):
@@ -99,6 +101,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", help="default: auto-detect Leonardo")
     ap.add_argument("--url", default="http://localhost:8085/data.json")
+    ap.add_argument("--auth", help="USER:PASSWORD for LHM's web server (install.ps1 sets this up)")
     ap.add_argument("--interval", type=float, default=1.0, help="seconds between updates (keep < 10)")
     args = ap.parse_args()
 
@@ -108,7 +111,7 @@ def main():
             if ser is None:
                 # Never open at 1200 baud: that resets the Leonardo into its bootloader.
                 ser = serial.Serial(args.port or find_port(), 115200, timeout=1, write_timeout=2)
-            data = read_sensors(args.url)
+            data = read_sensors(args.url, args.auth)
             ser.write(frame(name, *data).encode("ascii", "replace"))
             status = f"sending to {ser.port}" + ("" if data[0] is not None else f" (no sensors at {args.url})")
         except serial.SerialException as e:
