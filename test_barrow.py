@@ -18,17 +18,32 @@ assert screen(frame("Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz", 40, 100, 4700)) 
     ("Intel(R) Core(TM)", "i7-8700K CPU @", "40", "100", "4700")
 assert screen(frame("AMD Ryzen 7 9800X3D", None, None, None)) == ("AMD Ryzen 7 9800X3D", "", "--", "--", "--")
 
+from barrow import short_name
+assert short_name("Intel(R) Core(TM) i9-10900X CPU @ 3.70GHz") == "Core i9-10900X"
+assert short_name("AMD Ryzen 7 9800X3D 8-Core Processor") == "Ryzen 7 9800X3D"
+assert short_name("12th Gen Intel(R) Core(TM) i7-12700K") == "Core i7-12700K"
+
+# firmware/firmware.ino parses this line; keep the two in sync.
+assert frame("Ryzen 7 9800X3D", 65.4, 12.3, 5225.1, "GeForce RTX 5070 Ti", 51.7, 3, 20.66) == \
+    "C65c12%|CHC5225|G52g3%|R20.7|NGeForce RTX 5070 Ti|CPU:Ryzen 7 9800X3D      GPU:Intel\n"
+
 import json, threading, http.server
 from barrow import read_sensors
 tree = {"Children": [{"Children": [
     {"SensorId": "/amdcpu/0/temperature/2", "Text": "Core (Tctl/Tdie)", "RawValue": "53,8 °C"},
     {"SensorId": "/amdcpu/0/load/0", "Text": "CPU Total", "RawValue": 10.7},
     {"SensorId": "/amdcpu/0/clock/1", "Text": "Core #1", "RawValue": "5225.0 MHz"},
-    {"SensorId": "/gpu-nvidia/0/temperature/0", "Text": "GPU Core", "RawValue": "40 °C"}]}]}
+    {"HardwareId": "/gpu-amd/0", "Text": "AMD Radeon(TM) Graphics", "Children": [
+        {"SensorId": "/gpu-amd/0/load/0", "Text": "GPU Core", "RawValue": "5.0 %"}]},
+    {"HardwareId": "/gpu-nvidia/0", "Text": "NVIDIA GeForce RTX 5070 Ti", "Children": [
+        {"SensorId": "/gpu-nvidia/0/temperature/0", "Text": "GPU Core", "RawValue": "40 °C"},
+        {"SensorId": "/gpu-nvidia/0/load/0", "Text": "GPU Core", "RawValue": "3.0 %"}]},
+    {"SensorId": "/ram/data/0", "Text": "Memory Used", "RawValue": "20.7 GB"}]}]}
 H = type("H", (http.server.BaseHTTPRequestHandler,), {
     "do_GET": lambda s: (s.send_response(200), s.end_headers(), s.wfile.write(json.dumps(tree).encode())),
     "log_message": lambda *a: None})
 srv = http.server.HTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.handle_request, daemon=True).start()
-assert read_sensors(f"http://127.0.0.1:{srv.server_port}/") == (53.8, 10.7, 5225.0)
+assert read_sensors(f"http://127.0.0.1:{srv.server_port}/") == \
+    (53.8, 10.7, 5225.0, "GeForce RTX 5070 Ti", 40.0, 3.0, 20.7)
 print("ok")

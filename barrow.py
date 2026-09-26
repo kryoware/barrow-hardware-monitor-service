@@ -1,10 +1,9 @@
-"""Feeds CPU name/temp/load/clock to the Arduino Leonardo OLED stats display.
+"""Feeds CPU/GPU/RAM stats to the Arduino Leonardo OLED stats display running firmware/.
 
-Protocol (reverse-engineered from firmware-backup.bin, a GNATSTORM Phat-Stats style sketch):
-    C<temp>c<load>%|CHC<mhz>|CPU:<name>GPU:<ignored>
-After a '|' the sketch drains the serial input, redraws, and clears its buffer. It rotates
-screens every 18 s (big temp °C / clock MHz / load %, each under the two name lines) and
-blanks the screen after ~10 s without data.
+Protocol, one frame per line:
+    C<temp>c<load>%|CHC<mhz>|G<gpu temp>g<gpu load>%|R<ram GB>|N<gpu name>|CPU:<name>GPU:Intel
+The firmware rotates pages every 18 s (D1 temp, D2 clock, D3 load, D4 CPU/GPU/SYSRAM overview)
+and blanks the screen after ~10 s without data.
 
 Sensors come from LibreHardwareMonitor's Remote Web Server (Options > Remote Web Server > Run).
 Without it the display still shows the CPU name, with "--" for the readings.
@@ -32,39 +31,61 @@ def cpu_name():
     return winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
 
 
+def short_name(name):
+    """'Intel(R) Core(TM) i9-10900X CPU @ 3.70GHz' -> 'Core i9-10900X', as on Barrow's product screens."""
+    return " ".join(re.sub(r"^.*?\b(Intel|AMD|NVIDIA)\b|\(R\)|\(TM\)|\bCPU\b|@.*|\d+-Core Processor|Processor|with Radeon.*",
+                           "", name).split())
+
+
 def read_sensors(url):
-    """Returns (temp °C, load %, highest core MHz); None for anything unavailable."""
+    """Returns (temp °C, load %, highest core MHz, GPU name, GPU temp °C, GPU load %, RAM used GB);
+    None ("" for the GPU name) for anything unavailable."""
     try:
         with urllib.request.urlopen(url, timeout=2) as r:
             stack = [json.load(r)]
     except (OSError, ValueError):
-        return None, None, None
-    temps, loads, clocks = {}, {}, []
+        return None, None, None, "", None, None, None
+    temps, loads, clocks, names, gpus, ram = {}, {}, [], {}, {}, None
     while stack:
         n = stack.pop()
         stack += n.get("Children", [])
+        if "HardwareId" in n:
+            names[n["HardwareId"]] = n.get("Text", "")
         sid, text, v = n.get("SensorId", ""), n.get("Text", ""), n.get("RawValue")
         if isinstance(v, str):  # LHM 0.9.6 sends e.g. "53.8 °C", decimal comma in some locales
             m = re.match(r"-?\d+(?:[.,]\d+)?", v)
             v = float(m[0].replace(",", ".")) if m else None
-        if v is None or not re.match(r"/(amd|intel)cpu/0/", sid):
+        if v is None:
             continue
-        if "/temperature/" in sid:
+        hw, _, kind = sid.rpartition("/")[0].rpartition("/")
+        if hw.startswith("/gpu-") and text == "GPU Core":
+            gpus.setdefault(hw, {})[kind] = v
+        elif sid == "/ram/data/0":
+            ram = v
+        elif not re.fullmatch(r"/(amd|intel)cpu/0", hw):
+            continue
+        elif kind == "temperature":
             temps[text] = v
-        elif "/load/" in sid:
+        elif kind == "load":
             loads[text] = v
-        elif "/clock/" in sid and re.fullmatch(r"Core #\d+", text):
+        elif kind == "clock" and re.fullmatch(r"Core #\d+", text):
             clocks.append(v)
     temp = next((temps[k] for k in TEMP_SENSORS if k in temps), next(iter(temps.values()), None))
-    return temp, loads.get("CPU Total"), max(clocks, default=None)
+    # Integrated GPUs report a "GPU Core" load but no temperature; prefer the card that has one.
+    gpu = min(gpus, key=lambda h: ("temperature" not in gpus[h], h), default=None)
+    g = gpus.get(gpu, {})
+    return (temp, loads.get("CPU Total"), max(clocks, default=None),
+            short_name(names.get(gpu, "")), g.get("temperature"), g.get("load"), ram)
 
 
-def frame(name, temp, load, mhz):
-    num = lambda v: "--" if v is None else f"{v:.0f}"
+def frame(name, temp, load, mhz, gpu="", gtemp=None, gload=None, ram=None):
+    num = lambda v, f=".0f": "--" if v is None else f"{v:{f}}"
     l1, l2 = (textwrap.wrap(name, 20) + ["", ""])[:2]
-    # The sketch only splits the name over two lines (at +21 chars) when "Intel" appears after
-    # "CPU:"; otherwise it draws the same text twice. Nothing after "GPU:" is ever drawn.
-    return f"C{num(temp)}c{num(load)}%|CHC{num(mhz)}|CPU:{l1:<21}{l2}GPU:Intel"
+    # firmware/ shows only the first 19 chars of l1. The rest keeps the frame readable by the
+    # original sketch: it splits the name over two lines (at +21 chars) only when "Intel" appears
+    # after "CPU:", and never draws anything after "GPU:".
+    return (f"C{num(temp)}c{num(load)}%|CHC{num(mhz)}|G{num(gtemp)}g{num(gload)}%|R{num(ram, '.1f')}|N{gpu}|"
+            f"CPU:{l1:<21}{l2}GPU:Intel\n")
 
 
 def find_port():
@@ -81,7 +102,7 @@ def main():
     ap.add_argument("--interval", type=float, default=1.0, help="seconds between updates (keep < 10)")
     args = ap.parse_args()
 
-    name, ser, last = cpu_name(), None, None
+    name, ser, last = short_name(cpu_name()), None, None
     while True:
         try:
             if ser is None:
