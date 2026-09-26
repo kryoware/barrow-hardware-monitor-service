@@ -2,6 +2,8 @@
 
 Streams CPU name/temp/load/clock, GPU name/temp/load and RAM used from a Windows PC over USB serial to an Arduino Leonardo driving a 128x64 SSD1306 OLED.
 
+Read [SECURITY.md](SECURITY.md) before installation. It covers the protected LHM installation, existing-task migration, and the web server's privileged hardware-control API.
+
 ## Hardware
 
 - Arduino Leonardo (USB `2341:8036`)
@@ -13,13 +15,15 @@ Streams CPU name/temp/load/clock, GPU name/temp/load and RAM used from a Windows
 ### 1. Install prerequisites
 
 ```powershell
-winget install LibreHardwareMonitor.LibreHardwareMonitor Python.Python.3.13 ArduinoSA.CLI
+winget install Python.Python.3.13 ArduinoSA.CLI
 pip install pyserial
 ```
 
-`install.ps1` expects these exact paths, which are the winget defaults:
+Install a fresh official LibreHardwareMonitor release and its dependencies into an administrator-controlled `%ProgramFiles%\LibreHardwareMonitor` directory as described in [SECURITY.md](SECURITY.md). Do not use the per-user WinGet installation for an elevated task.
 
-- `%LOCALAPPDATA%\Microsoft\WinGet\Packages\LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe\LibreHardwareMonitor.exe`
+`install.ps1` expects these exact paths:
+
+- `%ProgramFiles%\LibreHardwareMonitor\LibreHardwareMonitor.exe`
 - `%LOCALAPPDATA%\Programs\Python\Python313\pythonw.exe`
 
 ### 2. Flash the firmware
@@ -41,15 +45,19 @@ arduino-cli config set directories.user "$env:LOCALAPPDATA\Arduino15\user"
 
 ### 3. Enable the LibreHardwareMonitor web server
 
-1. Run LibreHardwareMonitor as administrator. It needs admin rights to read the sensors.
-2. Go to **Options > Remote Web Server > Run**. It serves `http://localhost:8085/data.json`.
+The web server also exposes hardware-control operations. Turn on its authentication before running it; see [SECURITY.md](SECURITY.md#hardware-control-api). Leave it disabled otherwise; the OLED will still show the CPU name.
 
-Open that URL in a browser to check that it returns JSON.
+1. Apply the port-8085 firewall block from SECURITY.md before enabling the server.
+2. Run the protected LibreHardwareMonitor installation as administrator. It needs admin rights to read the sensors.
+3. In **Options > Remote Web Server > Authentication**, enable it with a user name and a strong password, then turn on **Options > Remote Web Server > Run**. The default endpoint is `http://localhost:8085/data.json`.
+4. Exit LHM (tray icon > Exit) and start it again. LHM 0.9.6 writes the credentials to `LibreHardwareMonitor.config` only on exit, and because of [LHM bug #1552](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/1552) it accepts the saved value, not the password you typed, after a restart. `barrow.py --lhm-config` reads them from there, so no password goes on a command line or into a task.
+
+Open that URL in a browser to check that it asks for credentials.
 
 ### 4. Test it manually
 
 ```powershell
-python barrow.py
+python barrow.py --lhm-config "$env:ProgramFiles\LibreHardwareMonitor\LibreHardwareMonitor.config"
 ```
 
 The Leonardo is detected automatically. The script prints `sending to COMx` once it connects. If it prints `(no sensors at ...)`, the LHM web server isn't reachable. In that case the display still shows the CPU name, with `--` for the readings.
@@ -60,6 +68,7 @@ Options:
 |------|---------|-------|
 | `--port` | auto-detect | e.g. `COM4` |
 | `--url` | `http://localhost:8085/data.json` | LHM endpoint |
+| `--lhm-config` | none | `LibreHardwareMonitor.config` to take web server credentials from |
 | `--interval` | `1` | Seconds between updates. Keep it under 10, or the display blanks. |
 
 Stop it with Ctrl+C before step 5, because only one process can hold the serial port.
@@ -74,8 +83,8 @@ Run this from an elevated PowerShell:
 
 This does the following:
 
-- Registers two logon scheduled tasks: `LibreHardwareMonitor` (runs elevated) and `Barrow OLED` (runs `barrow.py` via `pythonw.exe` as your normal user, with no console window).
-- Adds an inbound firewall rule that blocks port 8085. LHM listens on all interfaces, and this rule keeps it off the network. Loopback still works.
+- Establishes an inbound firewall block on port 8085 before registering the tasks. Loopback still works; this does not protect against local callers.
+- Registers two logon scheduled tasks: `LibreHardwareMonitor` (runs the Program Files installation elevated) and `Barrow OLED` (runs `barrow.py` via `pythonw.exe` as your normal user, with no console window).
 - Starts both tasks immediately.
 
 ## Updating the firmware later
@@ -110,9 +119,12 @@ avrdude -C <that dir>\etc\avrdude.conf -p m32u4 -c avr109 -P <bootloader COM> -U
 Run this from an elevated PowerShell:
 
 ```powershell
+Stop-ScheduledTask -TaskName 'LibreHardwareMonitor'
+Stop-ScheduledTask -TaskName 'Barrow OLED'
 Unregister-ScheduledTask -TaskName 'LibreHardwareMonitor','Barrow OLED' -Confirm:$false
-Remove-NetFirewallRule -DisplayName 'Block LibreHardwareMonitor web (8085)'
 ```
+
+Exit any manually started LHM instance and disable its web server. Keep the firewall block unless LHM's web server is permanently disabled or removed; deleting scheduled tasks alone does not make the listener safe.
 
 ## Troubleshooting
 
@@ -120,3 +132,4 @@ Remove-NetFirewallRule -DisplayName 'Block LibreHardwareMonitor web (8085)'
 - **`serial: could not open port`.** Another process holds the port: the scheduled task, the Arduino IDE serial monitor, or a second `barrow.py`.
 - **The GPU shows `--`.** Only a GPU that reports a "GPU Core" temperature is shown. Integrated GPUs that report load only are skipped.
 - **Tests:** `python test_barrow.py` prints `ok`.
+- **Invalid sensor responses.** Malformed or oversized JSON produces unavailable readings; invalid nodes and nonnumeric/nonfinite values are ignored. Responses are limited to 1 MiB, and the next poll retries automatically.

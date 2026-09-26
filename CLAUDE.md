@@ -25,11 +25,11 @@ arduino-cli upload -p COM4 --fqbn arduino:avr:leonardo firmware
 avrdude -C <that>/etc/avrdude.conf -p m32u4 -c avr109 -P <bootloader COM> -U flash:w:firmware-backup.bin:r
 ```
 
-`install.ps1` must run elevated. It registers two logon scheduled tasks (LibreHardwareMonitor as admin, `barrow.py` via `pythonw.exe` as normal user), adds an inbound firewall block on port 8085, and starts both. It hardcodes the WinGet LHM path and Python 3.13 path under `%LOCALAPPDATA%`.
+`install.ps1` must run elevated. It establishes the port-8085 inbound firewall block, registers two logon scheduled tasks (LibreHardwareMonitor as admin, `barrow.py` via `pythonw.exe` as normal user), and starts both. LHM must be installed with protected permissions under `%ProgramFiles%\LibreHardwareMonitor`; Python 3.13 remains under `%LOCALAPPDATA%`. See SECURITY.md for existing-task migration and the remaining hardware-control API mitigation requirements.
 
 ## Architecture
 
-Data flow: LibreHardwareMonitor Remote Web Server (`/data.json`, must be enabled in LHM: Options > Remote Web Server > Run) → `read_sensors()` walks the JSON tree → `frame()` formats a protocol line → written to the Leonardo (auto-detected by VID:PID `2341:8036`) once per `--interval`.
+Data flow: LibreHardwareMonitor Remote Web Server (`/data.json`, must be enabled in LHM: Options > Remote Web Server > Run; Basic auth credentials read from `LibreHardwareMonitor.config` via `--lhm-config`, see SECURITY.md) → `read_sensors()` walks the JSON tree → `frame()` formats a protocol line → written to the Leonardo (auto-detected by VID:PID `2341:8036`) once per `--interval`.
 
 Protocol, one `\n`-terminated line: `C<temp>c<load>%|CHC<mhz>|G<gpu temp>g<gpu load>%|R<ram GB>|N<gpu name>|CPU:<name>GPU:Intel`. `firmware.ino` `parse()` finds each field with `strstr` on its key, so keys must stay unique in the prefix. It shows the first 19 chars of the name. Pages rotate every 18 s: D1 TEMP, D2 ClocK, D3 USAGE, D4 CPU/GPU/SYSRAM overview.
 
