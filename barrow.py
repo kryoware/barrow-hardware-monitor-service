@@ -12,7 +12,9 @@ Without it the display still shows the CPU name, with "--" for the readings.
     python barrow.py [--port COM4] [--url http://localhost:8085/data.json] [--interval 1]
 """
 import argparse
+from http.client import HTTPException
 import json
+import math
 import re
 import textwrap
 import time
@@ -24,6 +26,7 @@ import serial.tools.list_ports
 
 LEONARDO = (0x2341, 0x8036)
 TEMP_SENSORS = ("Core (Tctl/Tdie)", "CPU Package", "Core (Tctl)", "Core (Tdie)")
+MAX_SENSOR_BYTES = 1024 * 1024
 
 
 def cpu_name():
@@ -39,23 +42,51 @@ def short_name(name):
 
 def read_sensors(url):
     """Returns (temp °C, load %, highest core MHz, GPU name, GPU temp °C, GPU load %, RAM used GB);
-    None ("" for the GPU name) for anything unavailable."""
+    None ("" for the GPU name) for anything unavailable.
+
+    Fetches LibreHardwareMonitor JSON from url with a two-second socket timeout.
+    Responses over 1 MiB and transport or JSON decoding errors (including excessive
+    nesting) return all fields unavailable. Invalid nodes and nonnumeric or
+    nonfinite readings are skipped; numeric strings may include unit suffixes
+    and a decimal comma.
+
+    Prefers a GPU with a "GPU Core" temperature, falling back to one without it;
+    ties use the lexicographically lowest hardware ID. Its name is limited to
+    128 characters before vendor names and other boilerplate are removed.
+    """
     try:
         with urllib.request.urlopen(url, timeout=2) as r:
-            stack = [json.load(r)]
-    except (OSError, ValueError):
+            body = r.read(MAX_SENSOR_BYTES + 1)
+        if len(body) > MAX_SENSOR_BYTES:
+            raise ValueError("Sensor response exceeds 1 MiB")
+        stack = [json.loads(body)]
+    except (OSError, ValueError, RecursionError, HTTPException):
         return None, None, None, "", None, None, None
     temps, loads, clocks, names, gpus, ram = {}, {}, [], {}, {}, None
     while stack:
         n = stack.pop()
-        stack += n.get("Children", [])
-        if "HardwareId" in n:
-            names[n["HardwareId"]] = n.get("Text", "")
+        if not isinstance(n, dict):
+            continue
+        children = n.get("Children", [])
+        if isinstance(children, list):
+            stack.extend(children)
         sid, text, v = n.get("SensorId", ""), n.get("Text", ""), n.get("RawValue")
+        if not isinstance(text, str):
+            continue
+        if isinstance(n.get("HardwareId"), str):
+            names[n["HardwareId"]] = text[:128]
+        if not isinstance(sid, str):
+            continue
         if isinstance(v, str):  # LHM 0.9.6 sends e.g. "53.8 °C", decimal comma in some locales
             m = re.match(r"-?\d+(?:[.,]\d+)?", v)
             v = float(m[0].replace(",", ".")) if m else None
-        if v is None:
+        if type(v) not in (int, float):
+            continue
+        try:
+            v = float(v)
+        except OverflowError:
+            continue
+        if not math.isfinite(v):
             continue
         hw, _, kind = sid.rpartition("/")[0].rpartition("/")
         if hw.startswith("/gpu-") and text == "GPU Core":
@@ -79,7 +110,16 @@ def read_sensors(url):
 
 
 def frame(name, temp, load, mhz, gpu="", gtemp=None, gload=None, ram=None):
+    """Return a newline-terminated OLED protocol string for CPU/GPU/RAM readings.
+
+    Temperatures are in °C, loads in percent, clock speed in MHz, and RAM in GB.
+    None readings become "--"; RAM uses one decimal place, other readings none.
+    The CPU name is wrapped to 20 characters and limited to two lines, with the
+    first padded to 21 characters for the original sketch. The GPU name has
+    nonprintable and non-ASCII characters and pipes removed, then is cut to 21 characters.
+    """
     num = lambda v, f=".0f": "--" if v is None else f"{v:{f}}"
+    gpu = re.sub(r"[^ -~]|\|", "", gpu)[:21]
     l1, l2 = (textwrap.wrap(name, 20) + ["", ""])[:2]
     # firmware/ shows only the first 19 chars of l1. The rest keeps the frame readable by the
     # original sketch: it splits the name over two lines (at +21 chars) only when "Intel" appears
