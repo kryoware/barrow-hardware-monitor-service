@@ -45,18 +45,19 @@ arduino-cli config set directories.user "$env:LOCALAPPDATA\Arduino15\user"
 
 ### 3. Enable the LibreHardwareMonitor web server
 
-The web server also exposes hardware-control operations. The default client does not support authentication; see [the mitigation and remaining configuration requirements](SECURITY.md#hardware-control-api) before enabling it. Leave it disabled if those requirements cannot be met; the OLED will still show the CPU name.
+The web server also exposes hardware-control operations. Turn on its authentication before running it; see [SECURITY.md](SECURITY.md#hardware-control-api). Leave it disabled otherwise; the OLED will still show the CPU name.
 
 1. Apply the port-8085 firewall block from SECURITY.md before enabling the server.
 2. Run the protected LibreHardwareMonitor installation as administrator. It needs admin rights to read the sensors.
-3. After addressing the API risk, go to **Options > Remote Web Server > Run**. The default endpoint is `http://localhost:8085/data.json`.
+3. In **Options > Remote Web Server > Authentication**, enable it with a user name and a strong password, then turn on **Options > Remote Web Server > Run**. The default endpoint is `http://localhost:8085/data.json`.
+4. Exit LHM (tray icon > Exit) and start it again. LHM 0.9.6 writes the credentials to `LibreHardwareMonitor.config` only on exit, and because of [LHM bug #1552](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/1552) it accepts the saved value, not the password you typed, after a restart. `barrow.py --lhm-config` reads them from there, so no password goes on a command line or into a task.
 
-Open that URL in a browser to check that it returns JSON.
+Open that URL in a browser to check that it asks for credentials.
 
 ### 4. Test it manually
 
 ```powershell
-python barrow.py
+python barrow.py --lhm-config "$env:ProgramFiles\LibreHardwareMonitor\LibreHardwareMonitor.config"
 ```
 
 The Leonardo is detected automatically. The script prints `sending to COMx` once it connects. If it prints `(no sensors at ...)`, the LHM web server isn't reachable. In that case the display still shows the CPU name, with `--` for the readings.
@@ -67,6 +68,7 @@ Options:
 |------|---------|-------|
 | `--port` | auto-detect | e.g. `COM4` |
 | `--url` | `http://localhost:8085/data.json` | LHM endpoint |
+| `--lhm-config` | none | `LibreHardwareMonitor.config` to take web server credentials from |
 | `--interval` | `1` | Seconds between updates. Keep it under 10, or the display blanks. |
 
 Stop it with Ctrl+C before step 5, because only one process can hold the serial port.

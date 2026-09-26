@@ -9,17 +9,21 @@ Sensors come from LibreHardwareMonitor's Remote Web Server (Options > Remote Web
 Without it the display still shows the CPU name, with "--" for the readings.
 
     pip install pyserial
-    python barrow.py [--port COM4] [--url http://localhost:8085/data.json] [--interval 1]
+    python barrow.py [--port COM4] [--url http://localhost:8085/data.json] [--lhm-config PATH] [--interval 1]
 """
 import argparse
+import base64
 from http.client import HTTPException
+import ipaddress
 import json
 import math
 import re
 import textwrap
 import time
+import urllib.parse
 import urllib.request
 import winreg
+import xml.etree.ElementTree as ET
 
 import serial
 import serial.tools.list_ports
@@ -40,13 +44,50 @@ def short_name(name):
                            "", name).split())
 
 
-def read_sensors(url):
+def lhm_auth(config):
+    """Return "user:password" from the LibreHardwareMonitor.config path given by config.
+
+    Return None if the file is unreadable or malformed XML, or authenticationEnabled
+    is not "true" (case-insensitive). Missing credential values become empty strings.
+    LHM writes the file only when it exits.
+
+    WARNING: On Windows, the default %AppData% directory is readable by other local user
+    accounts. If other accounts are in your threat model, restrict the file permissions
+    or store credentials via Windows Credential Manager instead.
+
+    ponytail: relies on LHM 0.9.6 bug #1552: it saves SHA256(password) and hashes that again on load,
+    so after one LHM restart the saved value is what the server accepts. Breaks once a release
+    includes PR #2390 (saved hash then matches the real password); store that instead then.
+    """
+    try:
+        s = {e.get("key"): e.get("value") or "" for e in ET.parse(config).iter("add")}
+    except (OSError, ET.ParseError):
+        return None
+    if s.get("authenticationEnabled", "").lower() != "true":
+        return None
+    return f"{s.get('authenticationUserName', '')}:{s.get('authenticationPassword', '')}"
+
+
+def is_loopback(host):
+    try:
+        return host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def read_sensors(url, auth=None):
     """Returns (temp °C, load %, highest core MHz, GPU name, GPU temp °C, GPU load %, RAM used GB);
-    None ("" for the GPU name) for anything unavailable.
+    None ("" for the GPU name) for anything unavailable. A nonempty auth string
+    supplies "user:password" for HTTP Basic authentication; None or "" omits the header.
+    With auth, url must be https or loopback http, else all fields are unavailable.
+    Credentials are sent via unredirected headers that are not forwarded on redirects;
+    configure the --url to point directly to LHM, not through a proxy, to prevent
+    accidental redirect loops to untrusted hosts.
 
     Fetches LibreHardwareMonitor JSON from url with a two-second socket timeout.
-    Responses over 1 MiB and transport or JSON decoding errors (including excessive
-    nesting) return all fields unavailable. Invalid nodes and nonnumeric or
+    Responses over 1 MiB and HTTP errors (including rejected credentials), transport
+    errors, or JSON decoding errors (including excessive nesting) return all fields
+    unavailable. Invalid nodes and nonnumeric or
     nonfinite readings are skipped; numeric strings may include unit suffixes
     and a decimal comma.
 
@@ -54,8 +95,14 @@ def read_sensors(url):
     ties use the lexicographically lowest hardware ID. Its name is limited to
     128 characters before vendor names and other boilerplate are removed.
     """
+    req = urllib.request.Request(url)
+    if auth:
+        u = urllib.parse.urlsplit(url)
+        if not (u.scheme == "https" or u.scheme == "http" and is_loopback(u.hostname)):
+            return None, None, None, "", None, None, None
+        req.add_unredirected_header("Authorization", "Basic " + base64.b64encode(auth.encode()).decode())
     try:
-        with urllib.request.urlopen(url, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=2) as r:
             body = r.read(MAX_SENSOR_BYTES + 1)
         if len(body) > MAX_SENSOR_BYTES:
             raise ValueError("Sensor response exceeds 1 MiB")
@@ -136,9 +183,18 @@ def find_port():
 
 
 def main():
+    """Parse CLI options and continuously send sensor frames to the Leonardo.
+
+    Use --port or auto-detect the device, reloading --lhm-config credentials before
+    each sensor request. Sleep for --interval seconds after each iteration.
+    Unavailable readings are sent as "--"; serial failures trigger reconnection
+    on the next iteration. Registry lookup OSErrors, ValueError from an invalid
+    sleep interval, and KeyboardInterrupt propagate to the caller.
+    """
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", help="default: auto-detect Leonardo")
     ap.add_argument("--url", default="http://localhost:8085/data.json")
+    ap.add_argument("--lhm-config", help="LibreHardwareMonitor.config to take web server credentials from")
     ap.add_argument("--interval", type=float, default=1.0, help="seconds between updates (keep < 10)")
     args = ap.parse_args()
 
@@ -148,7 +204,7 @@ def main():
             if ser is None:
                 # Never open at 1200 baud: that resets the Leonardo into its bootloader.
                 ser = serial.Serial(args.port or find_port(), 115200, timeout=1, write_timeout=2)
-            data = read_sensors(args.url)
+            data = read_sensors(args.url, lhm_auth(args.lhm_config) if args.lhm_config else None)
             ser.write(frame(name, *data).encode("ascii", "replace"))
             status = f"sending to {ser.port}" + ("" if data[0] is not None else f" (no sensors at {args.url})")
         except serial.SerialException as e:

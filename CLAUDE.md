@@ -29,7 +29,7 @@ avrdude -C <that>/etc/avrdude.conf -p m32u4 -c avr109 -P <bootloader COM> -U fla
 
 ## Architecture
 
-Data flow: LibreHardwareMonitor Remote Web Server (`/data.json`, must be enabled in LHM: Options > Remote Web Server > Run) → `read_sensors()` walks the JSON tree → `frame()` formats a protocol line → written to the Leonardo (auto-detected by VID:PID `2341:8036`) once per `--interval`.
+Data flow: LibreHardwareMonitor Remote Web Server (`/data.json`, must be enabled in LHM: Options > Remote Web Server > Run; Basic auth credentials read from `LibreHardwareMonitor.config` via `--lhm-config`, see SECURITY.md) → `read_sensors()` walks the JSON tree → `frame()` formats a protocol line → written to the Leonardo (auto-detected by VID:PID `2341:8036`) once per `--interval`.
 
 Protocol, one `\n`-terminated line: `C<temp>c<load>%|CHC<mhz>|G<gpu temp>g<gpu load>%|R<ram GB>|N<gpu name>|CPU:<name>GPU:Intel`. `firmware.ino` `parse()` finds each field with `strstr` on its key, so keys must stay unique in the prefix. It shows the first 19 chars of the name. Pages rotate every 18 s: D1 TEMP, D2 ClocK, D3 USAGE, D4 CPU/GPU/SYSRAM overview.
 

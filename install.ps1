@@ -30,7 +30,7 @@ Register-ScheduledTask -TaskName 'LibreHardwareMonitor' -Force -Settings $settin
     -Action (New-ScheduledTaskAction -Execute $lhm) `
     -Principal (New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest) | Out-Null
 Register-ScheduledTask -TaskName 'Barrow OLED' -Force -Settings $settings -Trigger $trigger `
-    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "`"$barrow`"" -WorkingDirectory $PSScriptRoot) `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "`"$barrow`" --lhm-config `"$([IO.Path]::ChangeExtension($lhm, '.config'))`"" -WorkingDirectory $PSScriptRoot) `
     -Principal (New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited) | Out-Null
 
 Start-ScheduledTask -TaskName 'LibreHardwareMonitor'

@@ -31,7 +31,7 @@ foreach ($scenario in @('new', 'existing', 'missing', 'firewall-failure', 'clean
         function New-ScheduledTaskTrigger { return @{} }
         function New-ScheduledTaskAction {
             param($Execute, $Argument, $WorkingDirectory)
-            return @{ Execute = $Execute }
+            return @{ Execute = $Execute; Argument = $Argument }
         }
         function New-ScheduledTaskPrincipal {
             param($UserId, $LogonType, $RunLevel)
@@ -44,6 +44,9 @@ foreach ($scenario in @('new', 'existing', 'missing', 'firewall-failure', 'clean
                 if ($Action.Execute -ne "$env:ProgramFiles\LibreHardwareMonitor\LibreHardwareMonitor.exe" -or
                     $Principal.RunLevel -ne 'Highest') { throw 'Unsafe LHM task action' }
             } elseif ($Principal.RunLevel -ne 'Limited') { throw 'Barrow must not be elevated' }
+            elseif ($Action.Argument -notlike "* --lhm-config `"$env:ProgramFiles\LibreHardwareMonitor\LibreHardwareMonitor.config`"") {
+                throw 'Barrow must read LHM credentials from the protected config'
+            }
             $events.Add("register-$TaskName")
         }
         function Start-ScheduledTask { param($TaskName) $events.Add("start-$TaskName") }

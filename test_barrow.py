@@ -92,4 +92,35 @@ assert connect.call_count == 1
 assert serial_port.write.call_count == 2
 assert serial_port.write.call_args_list[0].args[0] == frame('AuditChip', *missing).encode()
 assert b'C54c11%' in serial_port.write.call_args_list[1].args[0]
+# Web server credentials come from LHM's config and must reach the server as Basic auth.
+import os, tempfile
+from barrow import lhm_auth
+cfg = os.path.join(tempfile.mkdtemp(), "LibreHardwareMonitor.config")
+def write_cfg(enabled):
+    with open(cfg, "w") as f:
+        f.write(f'<?xml version="1.0" encoding="utf-8"?><configuration><appSettings>'
+                f'<add key="authenticationEnabled" value="{enabled}" /><add key="authenticationUserName" value="u" />'
+                f'<add key="authenticationPassword" value="p" /></appSettings></configuration>')
+write_cfg("True")
+assert lhm_auth(cfg) == "u:p"
+write_cfg("false")
+assert lhm_auth(cfg) is None
+assert lhm_auth(cfg + ".missing") is None
+with open(cfg, "w") as f:
+    f.write("<configuration")
+assert lhm_auth(cfg) is None
+for auth, header in (("u:p", "Basic dTpw"), (None, None)):
+    with patch('barrow.urllib.request.urlopen', return_value=io.BytesIO(json.dumps(tree).encode())) as get:
+        assert read_sensors('http://localhost/audit', auth)[0] == 53.8
+    assert get.call_args.args[0].get_header('Authorization') == header
+    assert 'Authorization' not in get.call_args.args[0].headers  # unredirected: dropped on redirect
+for url, sent in (('http://127.0.0.1/', True), ('http://[::1]/', True), ('https://lhm.example/', True),
+                  ('http://lhm.example/', False), ('http://10.0.0.5/', False), ('file:///c:/x', False)):
+    with patch('barrow.urllib.request.urlopen', return_value=io.BytesIO(json.dumps(tree).encode())) as get:
+        read_sensors(url, "u:p")
+    assert get.called == sent, url
+# Rejected credentials (401) must return missing, not terminate the service.
+from urllib.error import HTTPError
+with patch('barrow.urllib.request.urlopen', side_effect=HTTPError('http://localhost/', 401, 'Unauthorized', {}, None)):
+    assert read_sensors('http://localhost/', 'u:p') == missing
 print("ok")
