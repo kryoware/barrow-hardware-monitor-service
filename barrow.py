@@ -42,7 +42,18 @@ def short_name(name):
 
 def read_sensors(url):
     """Returns (temp °C, load %, highest core MHz, GPU name, GPU temp °C, GPU load %, RAM used GB);
-    None ("" for the GPU name) for anything unavailable."""
+    None ("" for the GPU name) for anything unavailable.
+
+    Fetches LibreHardwareMonitor JSON from url with a two-second socket timeout.
+    Responses over 1 MiB and transport or JSON decoding errors (including excessive
+    nesting) return all fields unavailable. Invalid nodes and nonnumeric or
+    nonfinite readings are skipped; numeric strings may include unit suffixes
+    and a decimal comma.
+
+    Prefers a GPU with a "GPU Core" temperature, falling back to one without it;
+    ties use the lexicographically lowest hardware ID. Its name is limited to
+    128 characters before vendor names and other boilerplate are removed.
+    """
     try:
         with urllib.request.urlopen(url, timeout=2) as r:
             body = r.read(MAX_SENSOR_BYTES + 1)
@@ -99,6 +110,14 @@ def read_sensors(url):
 
 
 def frame(name, temp, load, mhz, gpu="", gtemp=None, gload=None, ram=None):
+    """Return a newline-terminated OLED protocol string for CPU/GPU/RAM readings.
+
+    Temperatures are in °C, loads in percent, clock speed in MHz, and RAM in GB.
+    None readings become "--"; RAM uses one decimal place, other readings none.
+    The CPU name is wrapped to 20 characters and limited to two lines, with the
+    first padded to 21 characters for the original sketch. The GPU name has
+    nonprintable and non-ASCII characters and pipes removed, then is cut to 21 characters.
+    """
     num = lambda v, f=".0f": "--" if v is None else f"{v:{f}}"
     gpu = re.sub(r"[^ -~]|\|", "", gpu)[:21]
     l1, l2 = (textwrap.wrap(name, 20) + ["", ""])[:2]
