@@ -14,11 +14,13 @@ Without it the display still shows the CPU name, with "--" for the readings.
 import argparse
 import base64
 from http.client import HTTPException
+import ipaddress
 import json
 import math
 import re
 import textwrap
 import time
+import urllib.parse
 import urllib.request
 import winreg
 import xml.etree.ElementTree as ET
@@ -62,10 +64,19 @@ def lhm_auth(config):
     return f"{s.get('authenticationUserName', '')}:{s.get('authenticationPassword', '')}"
 
 
+def is_loopback(host):
+    try:
+        return host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def read_sensors(url, auth=None):
     """Returns (temp °C, load %, highest core MHz, GPU name, GPU temp °C, GPU load %, RAM used GB);
     None ("" for the GPU name) for anything unavailable. A nonempty auth string
     supplies "user:password" for HTTP Basic authentication; None or "" omits the header.
+    With auth, url must be https or loopback http, else all fields are unavailable;
+    the header is not forwarded on redirects.
 
     Fetches LibreHardwareMonitor JSON from url with a two-second socket timeout.
     Responses over 1 MiB and HTTP errors (including rejected credentials), transport
@@ -78,9 +89,15 @@ def read_sensors(url, auth=None):
     ties use the lexicographically lowest hardware ID. Its name is limited to
     128 characters before vendor names and other boilerplate are removed.
     """
-    headers = {"Authorization": "Basic " + base64.b64encode(auth.encode()).decode()} if auth else {}
+    req = urllib.request.Request(url)
+    if auth:
+        u = urllib.parse.urlsplit(url)
+        if not (u.scheme == "https" or u.scheme == "http" and is_loopback(u.hostname)):
+            return None, None, None, "", None, None, None
+        # Unredirected: urllib copies only regular headers onto the redirected request.
+        req.add_unredirected_header("Authorization", "Basic " + base64.b64encode(auth.encode()).decode())
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=2) as r:
             body = r.read(MAX_SENSOR_BYTES + 1)
         if len(body) > MAX_SENSOR_BYTES:
             raise ValueError("Sensor response exceeds 1 MiB")

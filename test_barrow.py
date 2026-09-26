@@ -113,4 +113,10 @@ for auth, header in (("u:p", "Basic dTpw"), (None, None)):
     with patch('barrow.urllib.request.urlopen', return_value=io.BytesIO(json.dumps(tree).encode())) as get:
         assert read_sensors('http://localhost/audit', auth)[0] == 53.8
     assert get.call_args.args[0].get_header('Authorization') == header
+    assert 'Authorization' not in get.call_args.args[0].headers  # unredirected: dropped on redirect
+for url, sent in (('http://127.0.0.1/', True), ('http://[::1]/', True), ('https://lhm.example/', True),
+                  ('http://lhm.example/', False), ('http://10.0.0.5/', False), ('file:///c:/x', False)):
+    with patch('barrow.urllib.request.urlopen', return_value=io.BytesIO(json.dumps(tree).encode())) as get:
+        read_sensors(url, "u:p")
+    assert get.called == sent, url
 print("ok")
