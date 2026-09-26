@@ -64,7 +64,7 @@ For network isolation, keep all Windows Firewall profiles enabled. Apply this ru
 New-NetFirewallRule -DisplayName 'Block LibreHardwareMonitor web (8085)' -Enabled True -Profile Any -Direction Inbound -Protocol TCP -LocalPort 8085 -Action Block
 ```
 
-If the rule already exists, the installer updates it without first removing it. Verify it and the firewall profiles:
+The installer creates a fresh unrestricted block before removing any old rules with the same display name. This discards stale program/address restrictions without a gap in protection. If creation fails, the old rules remain and tasks are not registered. Verify the replacement and the firewall profiles:
 
 ```powershell
 Get-NetFirewallProfile | Format-Table Name,Enabled

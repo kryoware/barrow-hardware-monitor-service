@@ -14,13 +14,12 @@ foreach ($path in @($lhm, $pythonw, $barrow)) {
 }
 
 # Establish the network block before registering anything that can start LHM.
-# Update in place so rerunning the installer never removes the existing block.
+# Create a fresh unrestricted rule before removing old rules with possibly narrower filters.
 $rule = Get-NetFirewallRule -DisplayName 'Block LibreHardwareMonitor web (8085)' -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'Block LibreHardwareMonitor web (8085)' -Enabled True -Profile Any `
+    -Direction Inbound -Protocol TCP -LocalPort 8085 -Action Block -Program Any -RemoteAddress Any | Out-Null
 if ($rule) {
-    $rule | Set-NetFirewallRule -Enabled True -Profile Any -Direction Inbound -Action Block -Protocol TCP -LocalPort 8085
-} else {
-    New-NetFirewallRule -DisplayName 'Block LibreHardwareMonitor web (8085)' -Enabled True -Profile Any `
-        -Direction Inbound -Protocol TCP -LocalPort 8085 -Action Block | Out-Null
+    $rule | Remove-NetFirewallRule
 }
 
 # Default task time limit is 72 h, which would kill these long-running processes.
